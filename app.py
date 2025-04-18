@@ -379,151 +379,174 @@ try:
                 """)
                 
                 # Get min and max dates from dataset (excluding the last sequence_length days)
-                min_date = df.index.min()
-                # We need at least sequence_length days for prediction and 1 day after for comparison
-                max_date = df.index.max() - pd.Timedelta(days=1)
-                
-                # Date selector
-                selected_date = st.date_input(
-                    "Select split date (model will predict the next day):",
-                    value=max_date - pd.Timedelta(days=30),
-                    min_value=min_date + pd.Timedelta(days=sequence_length),
-                    max_value=max_date
-                )
-                
-                # Convert to pandas datetime
-                selected_date = pd.to_datetime(selected_date)
-                next_day = selected_date + pd.Timedelta(days=1)
-                
-                if st.button("Test Prediction", key="visual_test_btn"):
-                    with st.spinner("Generating visual prediction test..."):
-                        try:
-                            # Get data up to selected date for prediction
-                            data_for_prediction = df_lstm[df_lstm.index <= selected_date].copy()
-                            
-                            # Prepare data for prediction
-                            scaler = MinMaxScaler(feature_range=(0, 1))
-                            scaled_data = scaler.fit_transform(data_for_prediction)
-                            
-                            # Take the last sequence_length days for prediction
-                            prediction_sequence = scaled_data[-sequence_length:].reshape(1, sequence_length, 1)
-                            
-                            # Make prediction for the next day
-                            next_day_prediction_scaled = model.predict(prediction_sequence, verbose=0)
-                            
-                            # Convert prediction back to original scale
-                            next_day_prediction = scaler.inverse_transform(
-                                next_day_prediction_scaled.reshape(-1, 1)
-                            )[0, 0]
-                            
-                            # Get actual value for the next day
-                            if next_day in df_lstm.index:
-                                actual_value = df_lstm.loc[next_day, 'Baraj_Seviyesi']
+                try:
+                    min_date = pd.Timestamp(df.index.min())
+                    max_date = pd.Timestamp(df.index.max())
+                    safe_max_date = max_date - pd.Timedelta(days=1)
+                    safe_min_date = min_date + pd.Timedelta(days=sequence_length)
+                    
+                    # Default value calculation
+                    default_date = safe_max_date - pd.Timedelta(days=30)
+                    if default_date < safe_min_date:
+                        default_date = safe_min_date
+                    
+                    # Date selector
+                    selected_date = st.date_input(
+                        "Select split date (model will predict the next day):",
+                        value=default_date.date(),
+                        min_value=safe_min_date.date(),
+                        max_value=safe_max_date.date()
+                    )
+                    
+                    # Convert to pandas datetime
+                    selected_date = pd.Timestamp(selected_date)
+                    next_day = pd.Timestamp(selected_date) + pd.Timedelta(days=1)
+                    
+                    if st.button("Test Prediction", key="visual_test_btn"):
+                        with st.spinner("Generating visual prediction test..."):
+                            try:
+                                # Get data up to selected date for prediction
+                                mask = df_lstm.index <= selected_date
+                                data_for_prediction = df_lstm[mask].copy()
                                 
-                                # Calculate error
-                                error = actual_value - next_day_prediction
-                                error_percent = (error / actual_value) * 100
+                                if len(data_for_prediction) < sequence_length:
+                                    st.error(f"Not enough data available before {selected_date.date()} for prediction. Need at least {sequence_length} days of data.")
+                                    st.stop()
                                 
-                                # Display results in metrics
-                                col1, col2, col3 = st.columns(3)
-                                with col1:
-                                    st.metric(
-                                        label=f"Predicted ({next_day.strftime('%Y-%m-%d')})", 
-                                        value=f"{next_day_prediction:.2f} m"
+                                # Prepare data for prediction
+                                scaler = MinMaxScaler(feature_range=(0, 1))
+                                scaled_data = scaler.fit_transform(data_for_prediction)
+                                
+                                # Take the last sequence_length days for prediction
+                                prediction_sequence = scaled_data[-sequence_length:].reshape(1, sequence_length, 1)
+                                
+                                # Make prediction for the next day
+                                next_day_prediction_scaled = model.predict(prediction_sequence, verbose=0)
+                                
+                                # Convert prediction back to original scale
+                                next_day_prediction = scaler.inverse_transform(
+                                    next_day_prediction_scaled.reshape(-1, 1)
+                                )[0, 0]
+                                
+                                # Get actual value for the next day
+                                next_day_data = df_lstm[df_lstm.index == next_day]
+                                if not next_day_data.empty:
+                                    actual_value = next_day_data.iloc[0]['Baraj_Seviyesi']
+                                    
+                                    # Calculate error
+                                    error = actual_value - next_day_prediction
+                                    error_percent = (error / actual_value) * 100
+                                    
+                                    # Display results in metrics
+                                    col1, col2, col3 = st.columns(3)
+                                    with col1:
+                                        st.metric(
+                                            label=f"Predicted ({next_day.strftime('%Y-%m-%d')})", 
+                                            value=f"{next_day_prediction:.2f} m"
+                                        )
+                                    with col2:
+                                        st.metric(
+                                            label=f"Actual ({next_day.strftime('%Y-%m-%d')})", 
+                                            value=f"{actual_value:.2f} m"
+                                        )
+                                    with col3:
+                                        st.metric(
+                                            label="Error", 
+                                            value=f"{error:.2f} m ({error_percent:.2f}%)",
+                                            delta=f"{error:.2f} m"
+                                        )
+                                    
+                                    # Create visualization - make sure all data is properly converted for plotly
+                                    # Get historical data for the chart (last 60 days before prediction)
+                                    vis_start_date = selected_date - pd.Timedelta(days=60)
+                                    # Make sure we have a valid start date
+                                    if vis_start_date < min_date:
+                                        vis_start_date = min_date
+                                        
+                                    # Create masks for data selection to avoid integer-based indexing
+                                    hist_mask = (df_lstm.index >= vis_start_date) & (df_lstm.index <= next_day)
+                                    historical_data = df_lstm[hist_mask].copy()
+                                    
+                                    # Convert datetime index to unix timestamps for plotly
+                                    timestamps = [d.timestamp() * 1000 for d in historical_data.index]
+                                    
+                                    fig = go.Figure()
+                                    
+                                    # Add historical line with converted timestamps
+                                    fig.add_trace(go.Scatter(
+                                        x=timestamps,
+                                        y=historical_data['Baraj_Seviyesi'],
+                                        mode='lines',
+                                        name='Historical Water Level',
+                                        line=dict(color='blue')
+                                    ))
+                                    
+                                    # Add vertical line at split date
+                                    fig.add_vline(
+                                        x=selected_date.timestamp() * 1000,  # Convert to Unix timestamp in milliseconds for plotly
+                                        line_width=2, 
+                                        line_dash="dash", 
+                                        line_color="black",
+                                        annotation_text="Split Date",
+                                        annotation_position="top"
                                     )
-                                with col2:
-                                    st.metric(
-                                        label=f"Actual ({next_day.strftime('%Y-%m-%d')})", 
-                                        value=f"{actual_value:.2f} m"
+                                    
+                                    # Add prediction point - converting timestamps for plotly
+                                    fig.add_trace(go.Scatter(
+                                        x=[next_day.timestamp() * 1000],  # Convert to Unix timestamp in milliseconds
+                                        y=[next_day_prediction],
+                                        mode='markers',
+                                        name='Prediction',
+                                        marker=dict(
+                                            color='red',
+                                            size=12,
+                                            symbol='circle'
+                                        )
+                                    ))
+                                    
+                                    # Add actual point - converting timestamps for plotly
+                                    fig.add_trace(go.Scatter(
+                                        x=[next_day.timestamp() * 1000],  # Convert to Unix timestamp in milliseconds
+                                        y=[actual_value],
+                                        mode='markers',
+                                        name='Actual',
+                                        marker=dict(
+                                            color='green',
+                                            size=12,
+                                            symbol='circle'
+                                        )
+                                    ))
+                                    
+                                    # Update layout
+                                    fig.update_layout(
+                                        title=f'Prediction Test for {next_day.strftime("%Y-%m-%d")}',
+                                        xaxis_title='Date',
+                                        yaxis_title='Water Level (m)',
+                                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                                        height=500
                                     )
-                                with col3:
-                                    st.metric(
-                                        label="Error", 
-                                        value=f"{error:.2f} m ({error_percent:.2f}%)",
-                                        delta=f"{error:.2f} m"
-                                    )
-                                
-                                # Create visualization
-                                # Get historical data for the chart (last 60 days before prediction)
-                                vis_start_date = selected_date - pd.Timedelta(days=60)
-                                historical_data = df_lstm[
-                                    (df_lstm.index >= vis_start_date) & 
-                                    (df_lstm.index <= next_day)
-                                ]
-                                
-                                fig = go.Figure()
-                                
-                                # Add historical line
-                                fig.add_trace(go.Scatter(
-                                    x=historical_data.index,
-                                    y=historical_data['Baraj_Seviyesi'],
-                                    mode='lines',
-                                    name='Historical Water Level',
-                                    line=dict(color='blue')
-                                ))
-                                
-                                # Add vertical line at split date
-                                fig.add_vline(
-                                    x=selected_date, 
-                                    line_width=2, 
-                                    line_dash="dash", 
-                                    line_color="black",
-                                    annotation_text="Split Date",
-                                    annotation_position="top"
-                                )
-                                
-                                # Add prediction point
-                                fig.add_trace(go.Scatter(
-                                    x=[next_day],
-                                    y=[next_day_prediction],
-                                    mode='markers',
-                                    name='Prediction',
-                                    marker=dict(
-                                        color='red',
-                                        size=12,
-                                        symbol='circle'
-                                    )
-                                ))
-                                
-                                # Add actual point
-                                fig.add_trace(go.Scatter(
-                                    x=[next_day],
-                                    y=[actual_value],
-                                    mode='markers',
-                                    name='Actual',
-                                    marker=dict(
-                                        color='green',
-                                        size=12,
-                                        symbol='circle'
-                                    )
-                                ))
-                                
-                                # Update layout
-                                fig.update_layout(
-                                    title=f'Prediction Test for {next_day.strftime("%Y-%m-%d")}',
-                                    xaxis_title='Date',
-                                    yaxis_title='Water Level (m)',
-                                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                                    height=500
-                                )
-                                
-                                st.plotly_chart(fig, use_container_width=True)
-                                
-                                # Add explanation
-                                st.markdown(f"""
-                                ### Interpretation
-                                
-                                - The blue line shows historical water level data up to your selected date ({selected_date.strftime('%Y-%m-%d')})
-                                - The vertical dashed line marks your selected split date
-                                - The red dot shows the model's prediction for {next_day.strftime('%Y-%m-%d')}
-                                - The green dot shows the actual water level on {next_day.strftime('%Y-%m-%d')}
-                                
-                                The closer the red and green dots, the more accurate the model's prediction.
-                                """)
-                            else:
-                                st.error(f"No actual data available for {next_day.strftime('%Y-%m-%d')}. Please select a different date.")
-                        except Exception as e:
-                            st.error(f"Error generating visual prediction test: {e}")
+                                    
+                                    st.plotly_chart(fig, use_container_width=True)
+                                    
+                                    # Add explanation
+                                    st.markdown(f"""
+                                    ### Interpretation
+                                    
+                                    - The blue line shows historical water level data up to your selected date ({selected_date.strftime('%Y-%m-%d')})
+                                    - The vertical dashed line marks your selected split date
+                                    - The red dot shows the model's prediction for {next_day.strftime('%Y-%m-%d')}
+                                    - The green dot shows the actual water level on {next_day.strftime('%Y-%m-%d')}
+                                    
+                                    The closer the red and green dots, the more accurate the model's prediction.
+                                    """)
+                                else:
+                                    st.error(f"No actual data available for {next_day.strftime('%Y-%m-%d')}. Please select a different date.")
+                            except Exception as e:
+                                st.error(f"Error generating visual prediction test: {str(e)}")
+                                st.exception(e)
+                except Exception as e:
+                    st.error(f"Error setting up date selector: {str(e)}")
+                    st.exception(e)
         elif data_loaded and not tensorflow_available:
             st.warning("TensorFlow is not available. Model prediction functionality is disabled.")
             st.info("Please install TensorFlow to enable prediction features.")
