@@ -136,5 +136,5 @@ This project is released under the MIT License. See `LICENSE` for details.
 
 ## Contact
 
-- Maintainer: [Your Name]
-- Email: your.email@example.com 
+- Maintainer: Muhammed Yasir Güneş
+- Email: yasirgunes1192@gmail.com
