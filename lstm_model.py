@@ -112,10 +112,13 @@ y_pred_scaled = model.predict(X_test)
 y_pred = scaler.inverse_transform(y_pred_scaled)
 y_test_actual = scaler.inverse_transform(y_test.reshape(-1, 1))
 
+# Save the trained model
+model.save('lstm_model.h5')
+print("Model saved as 'lstm_model.h5'")
+
 # %%
 # Calculate metrics on original scale
 from sklearn.metrics import r2_score, explained_variance_score
-
 
 rmse = np.sqrt(mean_squared_error(y_test_actual, y_pred))
 mae = mean_absolute_error(y_test_actual, y_pred)
