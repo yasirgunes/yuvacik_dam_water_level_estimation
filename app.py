@@ -26,7 +26,7 @@ if not hasattr(st, 'session_state'):
     st.session_state = {}
 
 # Title and description
-st.title("Dam Water Level Prediction")
+st.title("Yuvacık Dam Water Level Prediction")
 st.markdown("Interactive dashboard for visualizing and predicting dam water levels using LSTM model")
 
 # Flag for TensorFlow availability
@@ -41,6 +41,7 @@ try:
     
     # Check if model exists and load it, otherwise show warning
     model_path = 'lstm_model.h5'
+    history_path = 'model_history.pkl'
     if os.path.exists(model_path):
         # Add memory management for TensorFlow
         gpus = tf.config.experimental.list_physical_devices('GPU')
@@ -241,13 +242,17 @@ try:
             # Model performance metrics
             st.subheader("Model Performance")
             
-            tabs = st.tabs(["Metrics", "Test Predictions", "Visual Prediction Test"])
+            tabs = st.tabs(["Metrics", "Test Predictions", "Training History", "Visual Prediction Test"])
             
             with tabs[0]:
                 @st.cache_data(ttl=3600)
                 def calculate_model_metrics():
-                    # Use a test set to evaluate the model (last 60 days)
-                    test_size = 60
+                    # Fixed test size to 20% of the dataset
+                    test_size_percent = 20
+                    total_size = len(df_lstm)
+                    test_size = int(total_size * test_size_percent / 100)
+                    
+                    # Use a test set to evaluate the model 
                     test_data = df_lstm[-test_size-sequence_length:].copy()
                     
                     # Prepare the test data
@@ -280,10 +285,13 @@ try:
                     mae = mean_absolute_error(y_test_actual, y_pred_actual)
                     r2 = r2_score(y_test_actual, y_pred_actual)
                     
-                    return rmse, mae, r2, y_test_actual, y_pred_actual
+                    return rmse, mae, r2, y_test_actual, y_pred_actual, test_size, test_size_percent
                 
                 try:
-                    rmse, mae, r2, y_test_actual, y_pred_actual = calculate_model_metrics()
+                    rmse, mae, r2, y_test_actual, y_pred_actual, test_size, test_size_percent = calculate_model_metrics()
+                    
+                    # Display test set info
+                    st.info(f"Using {test_size} days as test set ({test_size_percent}% of total data)")
                     
                     # Display metrics with actual values
                     col1, col2, col3 = st.columns(3)
@@ -317,38 +325,56 @@ try:
                 
                 # Add actual visualization for test predictions
                 try:
-                    # Create dataframe for test results
+                    # Get dates for the test period - we need these for the x-axis
+                    # test_size is now determined in the metrics tab
+                    test_dates = df_lstm.index[-test_size:]
+                    
+                    # Create dataframe for test results with dates
                     test_df = pd.DataFrame({
+                        'Date': test_dates,
                         'Actual': y_test_actual,
                         'Predicted': y_pred_actual
                     })
                     
-                    # Create visualization
+                    # Create visualization with dates on x-axis
                     fig = go.Figure()
                     
                     # Add actual values
                     fig.add_trace(go.Scatter(
+                        x=test_df['Date'],
                         y=test_df['Actual'],
                         mode='lines',
                         name='Actual Values',
-                        line=dict(color='blue')
+                        line=dict(color='blue', width=2)
                     ))
                     
                     # Add predicted values
                     fig.add_trace(go.Scatter(
+                        x=test_df['Date'],
                         y=test_df['Predicted'],
                         mode='lines',
                         name='Predicted Values',
-                        line=dict(color='red')
+                        line=dict(color='red', width=2, dash='dash')
                     ))
                     
-                    # Update layout
+                    # Update layout with better title and axis labels
                     fig.update_layout(
-                        title='Test Set: Actual vs Predicted Values',
-                        xaxis_title='Time',
-                        yaxis_title='Water Level (m)',
+                        title='LSTM Water Level Prediction vs Actual (Test Set)',
+                        xaxis_title='Date',
+                        yaxis_title='Baraj Seviyesi (m)',
                         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                        height=400
+                        height=500,
+                        template="plotly_white",
+                        xaxis=dict(
+                            showgrid=True,
+                            gridwidth=1,
+                            gridcolor='lightgray',
+                        ),
+                        yaxis=dict(
+                            showgrid=True,
+                            gridwidth=1,
+                            gridcolor='lightgray',
+                        )
                     )
                     
                     st.plotly_chart(fig, use_container_width=True)
@@ -370,6 +396,133 @@ try:
                     st.info("Implementation for visualizing test predictions would go here")
             
             with tabs[2]:
+                st.write("Model Loss During Training")
+                
+                try:
+                    # Try to load actual training history from saved file
+                    history_available = False
+                    
+                    # Check if history is available from model
+                    if hasattr(model, 'history') and model.history is not None:
+                        history = model.history.history
+                        if 'loss' in history and 'val_loss' in history:
+                            epochs = range(1, len(history['loss']) + 1)
+                            training_loss = history['loss']
+                            validation_loss = history['val_loss']
+                            history_available = True
+                            st.success("Loaded training history from model")
+                    
+                    # If not in model, try to load from saved history file
+                    if not history_available and os.path.exists(history_path):
+                        import pickle
+                        try:
+                            with open(history_path, 'rb') as f:
+                                history = pickle.load(f)
+                            if 'loss' in history and 'val_loss' in history:
+                                epochs = range(1, len(history['loss']) + 1)
+                                training_loss = history['loss']
+                                validation_loss = history['val_loss']
+                                history_available = True
+                                st.success("Loaded training history from saved file")
+                        except Exception as e:
+                            st.warning(f"Could not load history file: {e}")
+                    
+                    # If still no history, show instructions to save history
+                    if not history_available:
+                        st.warning("Actual training history not found. To save training history, add this code to your model training script:")
+                        st.code("""
+# Train the model
+history = model.fit(
+    X_train, y_train,
+    epochs=50,
+    batch_size=32,
+    validation_split=0.2,
+    callbacks=[],
+    verbose=1
+)
+
+# Save the history
+import pickle
+with open('model_history.pkl', 'wb') as f:
+    pickle.dump(history.history, f)
+                        """)
+                        
+                        # Use simulated data as fallback
+                        st.info("Using simulated training data as an example")
+                        
+                        # Create dummy data for demonstration purposes
+                        epochs = range(1, 51)
+                        training_loss = [0.18, 0.032, 0.020, 0.015, 0.012, 
+                                        0.010, 0.009, 0.008, 0.007, 0.006,
+                                        0.005, 0.005, 0.004, 0.004, 0.004,
+                                        0.004, 0.004, 0.003, 0.003, 0.003,
+                                        0.003, 0.003, 0.003, 0.003, 0.003,
+                                        0.003, 0.003, 0.003, 0.003, 0.003,
+                                        0.003, 0.003, 0.003, 0.003, 0.003,
+                                        0.003, 0.003, 0.003, 0.003, 0.003,
+                                        0.003, 0.003, 0.003, 0.003, 0.003,
+                                        0.003, 0.003, 0.003, 0.002, 0.002]
+                        
+                        validation_loss = [0.045, 0.022, 0.015, 0.012, 0.010,
+                                          0.009, 0.008, 0.007, 0.006, 0.005,
+                                          0.004, 0.004, 0.004, 0.003, 0.003,
+                                          0.003, 0.003, 0.003, 0.003, 0.003,
+                                          0.003, 0.003, 0.003, 0.003, 0.003,
+                                          0.003, 0.003, 0.003, 0.003, 0.003,
+                                          0.003, 0.003, 0.003, 0.003, 0.003,
+                                          0.003, 0.003, 0.003, 0.003, 0.003,
+                                          0.003, 0.003, 0.003, 0.003, 0.003,
+                                          0.003, 0.003, 0.003, 0.002, 0.002]
+                    
+                    # Create a figure with matplotlib
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    ax.plot(epochs, training_loss, 'b-', label='Training Loss')
+                    ax.plot(epochs, validation_loss, 'orange', label='Validation Loss')
+                    ax.set_title('Model Loss During Training')
+                    ax.set_xlabel('Epoch')
+                    ax.set_ylabel('Loss (MSE)')
+                    ax.legend()
+                    ax.grid(True, linestyle='--', alpha=0.7)
+                    
+                    # Display the matplotlib figure in Streamlit
+                    st.pyplot(fig)
+                    
+                    # Add explanation
+                    st.markdown("""
+                    ### Training History Interpretation
+                    
+                    - **Training Loss**: The model's error on the training data during each epoch of training
+                    - **Validation Loss**: The model's error on a held-out validation set during training
+                    
+                    A good model shows:
+                    - Decreasing loss for both training and validation sets
+                    - Small gap between training and validation loss (indicates good generalization)
+                    - Stabilization of both curves (indicates convergence)
+                    
+                    If validation loss starts increasing while training loss continues to decrease, it may indicate overfitting.
+                    """)
+                    
+                    # Option to download history data
+                    if history_available:
+                        history_df = pd.DataFrame({
+                            'Epoch': epochs,
+                            'Training_Loss': training_loss,
+                            'Validation_Loss': validation_loss
+                        })
+                        
+                        csv = history_df.to_csv(index=False)
+                        st.download_button(
+                            label="Download Training History Data",
+                            data=csv,
+                            file_name='model_training_history.csv',
+                            mime='text/csv',
+                        )
+                    
+                except Exception as e:
+                    st.error(f"Could not display training history: {e}")
+                    st.exception(e)
+            
+            with tabs[3]:
                 st.subheader("Visual Prediction Accuracy Test")
                 st.markdown("""
                 This tool allows you to visually test the model's prediction accuracy. 
@@ -398,9 +551,11 @@ try:
                         max_value=safe_max_date.date()
                     )
                     
+                    # Add forecast days slider
+                    forecast_days = st.slider("Forecast Days", 1, 30, 1, key="visual_test_forecast_days")
+                    
                     # Convert to pandas datetime
                     selected_date = pd.Timestamp(selected_date)
-                    next_day = pd.Timestamp(selected_date) + pd.Timedelta(days=1)
                     
                     if st.button("Test Prediction", key="visual_test_btn"):
                         with st.spinner("Generating visual prediction test..."):
@@ -420,127 +575,159 @@ try:
                                 # Take the last sequence_length days for prediction
                                 prediction_sequence = scaled_data[-sequence_length:].reshape(1, sequence_length, 1)
                                 
-                                # Make prediction for the next day
-                                next_day_prediction_scaled = model.predict(prediction_sequence, verbose=0)
+                                # Generate forecast for multiple days
+                                forecasted_values = []
+                                current_sequence = prediction_sequence.copy()
                                 
-                                # Convert prediction back to original scale
-                                next_day_prediction = scaler.inverse_transform(
-                                    next_day_prediction_scaled.reshape(-1, 1)
-                                )[0, 0]
+                                for i in range(forecast_days):
+                                    # Predict next day
+                                    next_day_prediction_scaled = model.predict(current_sequence, verbose=0)
+                                    # Store the prediction
+                                    forecasted_values.append(next_day_prediction_scaled[0, 0])
+                                    # Update sequence for next prediction (remove oldest, add newest)
+                                    next_pred_reshaped = next_day_prediction_scaled[0, 0].reshape(1, 1, 1)
+                                    current_sequence = np.concatenate([current_sequence[:, 1:, :], 
+                                                                      next_pred_reshaped], 
+                                                                      axis=1)
                                 
-                                # Get actual value for the next day
-                                next_day_data = df_lstm[df_lstm.index == next_day]
-                                if not next_day_data.empty:
-                                    actual_value = next_day_data.iloc[0]['Baraj_Seviyesi']
+                                # Convert predictions back to original scale
+                                forecasted_values = scaler.inverse_transform(
+                                    np.array(forecasted_values).reshape(-1, 1)
+                                ).flatten()
+                                
+                                # Generate dates for forecast period
+                                forecast_dates = [selected_date + pd.Timedelta(days=i+1) for i in range(forecast_days)]
+                                
+                                # Get actual values for the forecast period
+                                actual_values = []
+                                for date in forecast_dates:
+                                    next_day_data = df_lstm[df_lstm.index == date]
+                                    if not next_day_data.empty:
+                                        actual_values.append(next_day_data.iloc[0]['Baraj_Seviyesi'])
+                                    else:
+                                        actual_values.append(None)
+                                
+                                # Create forecast dataframe
+                                forecast_df = pd.DataFrame({
+                                    'Date': forecast_dates,
+                                    'Forecasted_Value': forecasted_values,
+                                    'Actual_Value': actual_values
+                                })
+                                
+                                # Display forecast table
+                                st.write("Forecasted vs Actual Water Levels:")
+                                st.dataframe(forecast_df)
+                                
+                                # Calculate error metrics for available actual values
+                                valid_indices = [i for i, val in enumerate(actual_values) if val is not None]
+                                if valid_indices:
+                                    valid_forecasts = [forecasted_values[i] for i in valid_indices]
+                                    valid_actuals = [actual_values[i] for i in valid_indices]
                                     
-                                    # Calculate error
-                                    error = actual_value - next_day_prediction
-                                    error_percent = (error / actual_value) * 100
+                                    errors = [a - p for a, p in zip(valid_actuals, valid_forecasts)]
+                                    error_percents = [(a - p) / a * 100 for a, p in zip(valid_actuals, valid_forecasts)]
                                     
-                                    # Display results in metrics
-                                    col1, col2, col3 = st.columns(3)
+                                    mean_error = sum(errors) / len(errors)
+                                    mean_error_percent = sum(error_percents) / len(error_percents)
+                                    
+                                    # Display average error metrics
+                                    col1, col2 = st.columns(2)
                                     with col1:
                                         st.metric(
-                                            label=f"Predicted ({next_day.strftime('%Y-%m-%d')})", 
-                                            value=f"{next_day_prediction:.2f} m"
+                                            label="Average Error", 
+                                            value=f"{mean_error:.2f} m"
                                         )
                                     with col2:
                                         st.metric(
-                                            label=f"Actual ({next_day.strftime('%Y-%m-%d')})", 
-                                            value=f"{actual_value:.2f} m"
+                                            label="Average Error Percent", 
+                                            value=f"{mean_error_percent:.2f}%"
                                         )
-                                    with col3:
-                                        st.metric(
-                                            label="Error", 
-                                            value=f"{error:.2f} m ({error_percent:.2f}%)",
-                                            delta=f"{error:.2f} m"
-                                        )
+                                
+                                # Create visualization - make sure all data is properly converted for plotly
+                                # Get historical data for the chart (last 60 days before prediction)
+                                vis_start_date = selected_date - pd.Timedelta(days=60)
+                                # Make sure we have a valid start date
+                                if vis_start_date < min_date:
+                                    vis_start_date = min_date
                                     
-                                    # Create visualization - make sure all data is properly converted for plotly
-                                    # Get historical data for the chart (last 60 days before prediction)
-                                    vis_start_date = selected_date - pd.Timedelta(days=60)
-                                    # Make sure we have a valid start date
-                                    if vis_start_date < min_date:
-                                        vis_start_date = min_date
-                                        
-                                    # Create masks for data selection to avoid integer-based indexing
-                                    hist_mask = (df_lstm.index >= vis_start_date) & (df_lstm.index <= next_day)
-                                    historical_data = df_lstm[hist_mask].copy()
-                                    
-                                    # Convert datetime index to unix timestamps for plotly
-                                    timestamps = [d.timestamp() * 1000 for d in historical_data.index]
-                                    
-                                    fig = go.Figure()
-                                    
-                                    # Add historical line with converted timestamps
+                                # Create masks for data selection to avoid integer-based indexing
+                                hist_mask = (df_lstm.index >= vis_start_date) & (df_lstm.index <= selected_date)
+                                historical_data = df_lstm[hist_mask].copy()
+                                
+                                # Convert datetime index to unix timestamps for plotly
+                                timestamps = [d.timestamp() * 1000 for d in historical_data.index]
+                                
+                                fig = go.Figure()
+                                
+                                # Add historical line with converted timestamps
+                                fig.add_trace(go.Scatter(
+                                    x=timestamps,
+                                    y=historical_data['Baraj_Seviyesi'],
+                                    mode='lines',
+                                    name='Historical Water Level',
+                                    line=dict(color='blue')
+                                ))
+                                
+                                # Add vertical line at split date
+                                fig.add_vline(
+                                    x=selected_date.timestamp() * 1000,  # Convert to Unix timestamp in milliseconds for plotly
+                                    line_width=2, 
+                                    line_dash="dash", 
+                                    line_color="black",
+                                    annotation_text="Split Date",
+                                    annotation_position="top"
+                                )
+                                
+                                # Add prediction points - converting timestamps for plotly
+                                forecast_timestamps = [d.timestamp() * 1000 for d in forecast_dates]
+                                fig.add_trace(go.Scatter(
+                                    x=forecast_timestamps,
+                                    y=forecasted_values,
+                                    mode='lines+markers',
+                                    name='Predicted Values',
+                                    line=dict(color='red', dash='dash'),
+                                    marker=dict(color='red', size=8)
+                                ))
+                                
+                                # Add actual points for which we have data
+                                actual_timestamps = []
+                                valid_actuals = []
+                                for i, val in enumerate(actual_values):
+                                    if val is not None:
+                                        actual_timestamps.append(forecast_dates[i].timestamp() * 1000)
+                                        valid_actuals.append(val)
+                                
+                                if valid_actuals:
                                     fig.add_trace(go.Scatter(
-                                        x=timestamps,
-                                        y=historical_data['Baraj_Seviyesi'],
-                                        mode='lines',
-                                        name='Historical Water Level',
-                                        line=dict(color='blue')
-                                    ))
-                                    
-                                    # Add vertical line at split date
-                                    fig.add_vline(
-                                        x=selected_date.timestamp() * 1000,  # Convert to Unix timestamp in milliseconds for plotly
-                                        line_width=2, 
-                                        line_dash="dash", 
-                                        line_color="black",
-                                        annotation_text="Split Date",
-                                        annotation_position="top"
-                                    )
-                                    
-                                    # Add prediction point - converting timestamps for plotly
-                                    fig.add_trace(go.Scatter(
-                                        x=[next_day.timestamp() * 1000],  # Convert to Unix timestamp in milliseconds
-                                        y=[next_day_prediction],
+                                        x=actual_timestamps,
+                                        y=valid_actuals,
                                         mode='markers',
-                                        name='Prediction',
-                                        marker=dict(
-                                            color='red',
-                                            size=12,
-                                            symbol='circle'
-                                        )
+                                        name='Actual Values',
+                                        marker=dict(color='green', size=8)
                                     ))
-                                    
-                                    # Add actual point - converting timestamps for plotly
-                                    fig.add_trace(go.Scatter(
-                                        x=[next_day.timestamp() * 1000],  # Convert to Unix timestamp in milliseconds
-                                        y=[actual_value],
-                                        mode='markers',
-                                        name='Actual',
-                                        marker=dict(
-                                            color='green',
-                                            size=12,
-                                            symbol='circle'
-                                        )
-                                    ))
-                                    
-                                    # Update layout
-                                    fig.update_layout(
-                                        title=f'Prediction Test for {next_day.strftime("%Y-%m-%d")}',
-                                        xaxis_title='Date',
-                                        yaxis_title='Water Level (m)',
-                                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                                        height=500
-                                    )
-                                    
-                                    st.plotly_chart(fig, use_container_width=True)
-                                    
-                                    # Add explanation
-                                    st.markdown(f"""
-                                    ### Interpretation
-                                    
-                                    - The blue line shows historical water level data up to your selected date ({selected_date.strftime('%Y-%m-%d')})
-                                    - The vertical dashed line marks your selected split date
-                                    - The red dot shows the model's prediction for {next_day.strftime('%Y-%m-%d')}
-                                    - The green dot shows the actual water level on {next_day.strftime('%Y-%m-%d')}
-                                    
-                                    The closer the red and green dots, the more accurate the model's prediction.
-                                    """)
-                                else:
-                                    st.error(f"No actual data available for {next_day.strftime('%Y-%m-%d')}. Please select a different date.")
+                                
+                                # Update layout
+                                fig.update_layout(
+                                    title=f'Prediction Test ({forecast_days} days from {selected_date.strftime("%Y-%m-%d")})',
+                                    xaxis_title='Date',
+                                    yaxis_title='Water Level (m)',
+                                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                                    height=500
+                                )
+                                
+                                st.plotly_chart(fig, use_container_width=True)
+                                
+                                # Add explanation
+                                st.markdown(f"""
+                                ### Interpretation
+                                
+                                - The blue line shows historical water level data up to your selected date ({selected_date.strftime('%Y-%m-%d')})
+                                - The vertical dashed line marks your selected split date
+                                - The red line shows the model's predictions for the next {forecast_days} days
+                                - The green dots show the actual water levels for dates where data is available
+                                
+                                The closer the red line is to the green dots, the more accurate the model's predictions.
+                                """)
                             except Exception as e:
                                 st.error(f"Error generating visual prediction test: {str(e)}")
                                 st.exception(e)
